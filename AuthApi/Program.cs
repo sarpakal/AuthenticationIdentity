@@ -2,27 +2,42 @@ using System.Text;
 using System.Threading.RateLimiting;
 using AuthApi.Data;
 using AuthApi.Entities;
+using AuthApi.Infrastructure;
+using AuthApi.Models;
 using AuthApi.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
 using Microsoft.OpenApi;
-using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ── Database ────────────────────────────────────────────────────────────────
-var dbPath = Path.Combine(builder.Environment.ContentRootPath, "authapi.db");
+//var dbPath = Path.Combine(builder.Environment.ContentRootPath, "authapi.db");
+//Console.WriteLine($"DB PATH: {dbPath}");
+//builder.Services.AddDbContext<AppDbContext>(opts =>
+//    opts.UseSqlite($"Data Source={dbPath}"));
+//opts.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+//opts.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-Console.WriteLine($"DB PATH: {dbPath}");
+// ── Database ─────────────────────────────────────────────────────────────────
+// Dev: SQLite with EnsureCreated (no migrations lock issue)
+// Prod: PostgreSQL with Migrate()
+var isDev = builder.Environment.IsDevelopment();
 
-builder.Services.AddDbContext<AppDbContext>(opts =>
-    opts.UseSqlite($"Data Source={dbPath}"));
-//opts.UseSqlite(builder.Configuration.GetConnectionString("SqliteDefaultConnection")));
-    //opts.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
-// Swap to UseSqlite(...) or UseNpgsql(...) as needed
+if (isDev)
+{
+    builder.Services.AddDbContext<AppDbContext>(opts =>
+        opts.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+}
+else
+{
+    builder.Services.AddDbContext<AppDbContext>(opts =>
+        opts.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+}
 
 // ── Identity ────────────────────────────────────────────────────────────────
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(opts =>
@@ -62,6 +77,23 @@ builder.Services.AddAuthentication(opts =>
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
         ClockSkew = TimeSpan.Zero,
     };
+    // ── Blacklist check on every authenticated request ───────────────────────
+    opts.Events = new JwtBearerEvents
+    {
+        OnTokenValidated = ctx =>
+        {
+            var blacklist = ctx.HttpContext.RequestServices
+                .GetRequiredService<ITokenBlacklistService>();
+
+            var jti = ctx.Principal?
+                .FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
+
+            if (jti != null && blacklist.IsBlacklisted(jti))
+                ctx.Fail("Token has been revoked.");
+
+            return Task.CompletedTask;
+        }
+    };
 });
 
 // ── Authorization Policies ───────────────────────────────────────────────────
@@ -86,10 +118,16 @@ builder.Services.AddRateLimiter(opts =>
 });
 
 // ── App Services ─────────────────────────────────────────────────────────────
+builder.Services.AddSingleton<ITokenBlacklistService, TokenBlacklistService>();
+builder.Services.AddHostedService(p => (TokenBlacklistService)p.GetRequiredService<ITokenBlacklistService>());
+builder.Services.AddScoped<IEnrollmentService, EnrollmentService>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IOtpService, OtpService>();
 builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<ISmsService, ConsoleSmsService>(); // Swap to TwilioSmsService in prod
+
+
+
 
 // ── OpenAPI (.NET 10 native) ─────────────────────────────────────────────────
 // Uses Microsoft.AspNetCore.OpenApi — no Swashbuckle needed.
@@ -124,27 +162,23 @@ builder.Services.AddControllers();
 
 var app = builder.Build();
 
-// ✅ THIS PART IS MISSING (or too late in your pipeline)
+// ── Database initialisation (SQLite-safe) ────────────────────────────────────
+// EF Core 10 introduced a migrations lock table that can deadlock on SQLite.
+// For SQLite in dev, EnsureCreated() is simpler and avoids the lock entirely.
+// Switch back to Migrate() when moving to SQL Server / Postgres in production.
+// ── Database initialisation ───────────────────────────────────────────────────
 using (var scope = app.Services.CreateScope())
 {
-    var services = scope.ServiceProvider;
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-    Console.WriteLine("Applying migrations...");
-    var db = services.GetRequiredService<AppDbContext>();
-    db.Database.Migrate();
+    if (isDev)
+        // SQLite dev: EnsureCreated avoids the EF Core 10 migrations lock bug
+        db.Database.EnsureCreated();
+    else
+        // PostgreSQL prod: proper migration history, safe for concurrent deploys
+        db.Database.Migrate();
 
-    // Optional: seed roles
-    var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
-    if (!await roleManager.RoleExistsAsync("Admin"))
-    {
-        await roleManager.CreateAsync(new IdentityRole("Admin"));
-    }
-}
-
-
-// ── Seed roles ────────────────────────────────────────────────────────────────
-using (var scope = app.Services.CreateScope())
-{
+    // ── Seed roles ───────────────────────────────────────────────────────────
     var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
     foreach (var role in new[] { "Admin", "User" })
     {
@@ -153,6 +187,7 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+
 if (app.Environment.IsDevelopment())
 {
     // Serves the OpenAPI JSON spec at /openapi/v1.json
@@ -160,12 +195,13 @@ if (app.Environment.IsDevelopment())
 
     // Optional: lightweight Swagger UI via Scalar
     // Install: dotnet add package Scalar.AspNetCore
-    app.MapScalarApiReference();
+    //app.MapScalarApiReference();
 }
 
 //app.UseHttpsRedirection();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
+app.MapGet("/", () => "AuthApi is running."); 
 app.MapControllers();
 app.Run();

@@ -1,172 +1,150 @@
-﻿using AuthApi.DTOs;
+using AuthApi.DTOs;
 using AuthApi.Entities;
+using AuthApi.Models;
 using AuthApi.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
-using System.Security.Cryptography;
 
 namespace AuthApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[EnableRateLimiting("auth")]
 public class EnrollmentController : ControllerBase
 {
+    private readonly IEnrollmentService _enrollment;
     private readonly UserManager<ApplicationUser> _userManager;
-    private readonly IOtpService _otp;
-    private readonly ISmsService _sms;
-    private readonly ITokenService _tokens;
     private readonly IAuditService _audit;
-    private readonly ILogger<EnrollmentController> _logger;
 
     public EnrollmentController(
+        IEnrollmentService enrollment,
         UserManager<ApplicationUser> userManager,
-        IOtpService otp,
-        ISmsService sms,
-        ITokenService tokens,
-        IAuditService audit,
-        ILogger<EnrollmentController> logger)
+        IAuditService audit)
     {
+        _enrollment  = enrollment;
         _userManager = userManager;
-        _otp = otp;
-        _sms = sms;
-        _tokens = tokens;
-        _audit = audit;
-        _logger = logger;
+        _audit       = audit;
     }
 
     // ── POST /api/enrollment/register ────────────────────────────────────────
-    /// <summary>
-    /// Step 1: Submit phone number.
-    /// Creates user if new, (re)sends OTP via SMS.
-    /// </summary>
     [HttpPost("register")]
+    [EnableRateLimiting("auth")]
     public async Task<IActionResult> Register([FromBody] EnrollRequest req)
     {
         var device = DeviceInfoExtractor.Extract(HttpContext);
-        var phone = req.PhoneNumber.Trim();
+        var phone  = req.PhoneNumber.Trim();
 
-        // Find or create user
-        var user = await _userManager.FindByNameAsync(phone);
-        if (user == null)
-        {
-            user = new ApplicationUser
+        var result = await _enrollment.RegisterAsync(phone);
+
+        if (!result.Success)
+            return result.FailureReason switch
             {
-                UserName = phone,
-                PhoneNumber = phone,
-                EnrolledAt = DateTime.UtcNow,
-                IsActive = true,
+                EnrollmentFailureReason.UserInactive      => Forbid(),
+                EnrollmentFailureReason.SmsSendFailed     => StatusCode(502,
+                    new ErrorResponse("Failed to send OTP. Please try again.")),
+                EnrollmentFailureReason.PersistenceFailed => StatusCode(500,
+                    new ErrorResponse("Registration failed. Please try again.")),
+                _ => BadRequest(new ErrorResponse("Registration failed."))
             };
 
-            var result = await _userManager.CreateAsync(user);
-            if (!result.Succeeded)
-            {
-                var errors = string.Join("; ", result.Errors.Select(e => e.Description));
-                return BadRequest(new ErrorResponse("Registration failed", errors));
-            }
-
-            await _userManager.AddToRoleAsync(user, "User");
-        }
-
-        if (!user.IsActive)
-            return Forbid();
-
-        // Generate & persist OTP (plain stored temporarily — not a secret at rest)
-        var otpCode = _otp.Generate();
-        user.OtpCode = otpCode;
-        user.OtpExpiry = DateTime.UtcNow.AddSeconds(120);
-        user.OtpAttempts = 0;
-        await _userManager.UpdateAsync(user);
-
-        // Send SMS
-        await _sms.SendOtpAsync(phone, otpCode);
-
-        await _audit.LogAsync(user.Id, AuditEventTypes.OtpSent, device, HttpContext);
+        await _audit.LogAsync(result.UserId!, AuditEventTypes.OtpSent, device, HttpContext);
 
         return Ok(new EnrollResponse(
-            "OTP sent to your phone number.",
+            result.IsNewUser ? "Account created. OTP sent to your phone." : "OTP sent to your phone.",
             phone,
             OtpExpirySeconds: 120));
     }
 
+    // ── POST /api/enrollment/resend ──────────────────────────────────────────
+    [HttpPost("resend")]
+    [EnableRateLimiting("auth")]
+    public async Task<IActionResult> Resend([FromBody] ResendOtpRequest req)
+    {
+        var device = DeviceInfoExtractor.Extract(HttpContext);
+        var phone  = req.PhoneNumber.Trim();
+
+        var result = await _enrollment.ResendOtpAsync(phone);
+
+        if (!result.Success)
+            return result.FailureReason switch
+            {
+                EnrollmentFailureReason.Cooldown => StatusCode(429,
+                    new ResendOtpResponse(
+                        $"Please wait {result.CooldownRemaining} seconds before requesting a new OTP.",
+                        OtpExpirySeconds: 120,
+                        CooldownSeconds: result.CooldownRemaining ?? 0)),
+
+                EnrollmentFailureReason.UserInactive       => Forbid(),
+                EnrollmentFailureReason.InvalidPhoneNumber => NotFound(
+                    new ErrorResponse("Phone number not registered.")),
+                EnrollmentFailureReason.SmsSendFailed      => StatusCode(502,
+                    new ErrorResponse("Failed to send OTP. Please try again.")),
+                _ => StatusCode(500, new ErrorResponse("Unexpected error."))
+            };
+
+        await _audit.LogAsync(result.UserId!, AuditEventTypes.OtpSent, device, HttpContext);
+
+        return Ok(new ResendOtpResponse(
+            "A new OTP has been sent to your phone number.",
+            OtpExpirySeconds: 120,
+            CooldownSeconds: 0));
+    }
+
     // ── POST /api/enrollment/verify ──────────────────────────────────────────
-    /// <summary>
-    /// Step 2: Verify OTP → receive JWT tokens.
-    /// </summary>
     [HttpPost("verify")]
+    [EnableRateLimiting("auth")]
     public async Task<IActionResult> Verify([FromBody] VerifyOtpRequest req)
     {
         var device = DeviceInfoExtractor.Extract(HttpContext);
-        var phone = req.PhoneNumber.Trim();
+        var phone  = req.PhoneNumber.Trim();
 
-        var user = await _userManager.FindByNameAsync(phone);
-        if (user == null)
-            return NotFound(new ErrorResponse("Phone number not registered."));
+        // Validate OTP — service handles all state mutations
+        var otpResult = await _enrollment.ValidateOtpAsync(phone, req.OtpCode);
 
-        if (!user.IsActive)
-            return Forbid();
-
-        // Lockout after too many failed attempts
-        if (user.OtpAttempts >= 5)
+        if (!otpResult.IsValid)
         {
-            await _audit.LogAsync(user.Id, AuditEventTypes.AccountLocked, device, HttpContext,
-                success: false, failureReason: "Too many OTP attempts");
-            return StatusCode(429, new ErrorResponse("Too many attempts. Request a new OTP."));
+            var (eventType, failureReason) = otpResult.FailureReason switch
+            {
+                OtpFailureReason.Expired         => (AuditEventTypes.OtpExpired,    "OTP expired"),
+                OtpFailureReason.TooManyAttempts => (AuditEventTypes.AccountLocked, "Too many attempts"),
+                _                                => (AuditEventTypes.OtpFailed,     "Invalid OTP"),
+            };
+
+            var user = await _userManager.FindByNameAsync(phone);
+            if (user != null)
+                await _audit.LogAsync(user.Id, eventType, device, HttpContext,
+                    success: false, failureReason: failureReason);
+
+            return otpResult.FailureReason switch
+            {
+                OtpFailureReason.UserNotFound    => NotFound(
+                    new ErrorResponse("Phone number not registered.")),
+                OtpFailureReason.UserInactive    => Forbid(),
+                OtpFailureReason.Expired         => BadRequest(
+                    new ErrorResponse("OTP has expired. Request a new one.")),
+                OtpFailureReason.TooManyAttempts => StatusCode(429,
+                    new ErrorResponse("Too many attempts. Request a new OTP.")),
+                OtpFailureReason.InvalidCode     => BadRequest(
+                    new ErrorResponse("Invalid OTP.",
+                        $"{otpResult.AttemptsRemaining} attempts remaining.")),
+                _ => BadRequest(new ErrorResponse("Verification failed."))
+            };
         }
 
-        // Check expiry
-        if (_otp.IsExpired(user.OtpExpiry))
-        {
-            await _audit.LogAsync(user.Id, AuditEventTypes.OtpExpired, device, HttpContext,
-                success: false, failureReason: "OTP expired");
-            return BadRequest(new ErrorResponse("OTP has expired. Request a new one."));
-        }
+        // OTP valid — load user and issue tokens
+        var verifiedUser = await _userManager.FindByNameAsync(phone);
+        if (verifiedUser == null) return Unauthorized();
 
-        // Constant-time comparison to prevent timing attacks
-        var valid = CryptographicOperations.FixedTimeEquals(
-            System.Text.Encoding.UTF8.GetBytes(user.OtpCode ?? ""),
-            System.Text.Encoding.UTF8.GetBytes(req.OtpCode));
+        // IssueTokensAsync returns the full TokenResult internal model
+        TokenResult tokens = await _enrollment.IssueTokensAsync(verifiedUser);
 
-        if (!valid)
-        {
-            user.OtpAttempts++;
-            await _userManager.UpdateAsync(user);
+        await _audit.LogAsync(verifiedUser.Id, AuditEventTypes.OtpVerified, device, HttpContext);
+        await _audit.LogAsync(verifiedUser.Id, AuditEventTypes.Login,       device, HttpContext);
 
-            await _audit.LogAsync(user.Id, AuditEventTypes.OtpFailed, device, HttpContext,
-                success: false, failureReason: $"Invalid OTP (attempt {user.OtpAttempts})");
-
-            return BadRequest(new ErrorResponse("Invalid OTP.",
-                $"{5 - user.OtpAttempts} attempts remaining."));
-        }
-
-        // OTP valid — clear it and mark phone verified
-        user.OtpCode = null;
-        user.OtpExpiry = null;
-        user.OtpAttempts = 0;
-        user.IsPhoneVerified = true;
-
-        // Issue tokens
-        var refreshToken = _tokens.GenerateRefreshToken();
-        user.RefreshToken = _tokens.HashToken(refreshToken);
-        user.RefreshTokenExpiry = DateTime.UtcNow.AddDays(7);
-        await _userManager.UpdateAsync(user);
-
-        var roles = await _userManager.GetRolesAsync(user);
-        var accessToken = _tokens.GenerateAccessToken(user, roles);
-        var expiresAt = DateTime.UtcNow.AddMinutes(15);
-
-        await _audit.LogAsync(user.Id, AuditEventTypes.OtpVerified, device, HttpContext);
-        await _audit.LogAsync(user.Id, AuditEventTypes.Login, device, HttpContext);
-
-        return Ok(new TokenResponse(accessToken, refreshToken, expiresAt));
+        // Map TokenResult → public TokenResponse DTO
+        return Ok(new TokenResponse(
+            tokens.AccessToken,
+            tokens.RefreshToken,
+            tokens.AccessTokenExpiresAt));
     }
-
-    [HttpGet("/")]
-    [ProducesResponseType(typeof(string), StatusCodes.Status200OK)]
-    public IActionResult Index()
-    {
-        return Ok("AuthApi is running.");
-    }
-
 }

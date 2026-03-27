@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace AuthApi.DTOs;
 
@@ -17,8 +17,20 @@ public record EnrollResponse(
 // ── OTP Verification ────────────────────────────────────────────────────────
 
 public record VerifyOtpRequest(
-    [Required, Phone] string PhoneNumber,
+    [Required, Phone]  string PhoneNumber,
     [Required, Length(6, 6)] string OtpCode
+);
+
+// ── Resend OTP ───────────────────────────────────────────────────────────────
+
+public record ResendOtpRequest(
+    [Required, Phone] string PhoneNumber
+);
+
+public record ResendOtpResponse(
+    string Message,
+    int OtpExpirySeconds,
+    int CooldownSeconds   // seconds remaining before another resend is allowed
 );
 
 // ── Token ───────────────────────────────────────────────────────────────────

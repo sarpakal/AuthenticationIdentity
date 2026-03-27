@@ -11,6 +11,9 @@ public class EnrollmentResult
     public string? UserId { get; init; }
     public bool IsNewUser { get; init; }
 
+    /// <summary>Populated only when a resend is attempted within the cooldown window.</summary>
+    public int? CooldownRemaining { get; init; }
+
     public static EnrollmentResult Ok(string userId, bool isNewUser) =>
         new() { Success = true, UserId = userId, IsNewUser = isNewUser };
 
@@ -24,4 +27,5 @@ public enum EnrollmentFailureReason
     UserInactive,
     SmsSendFailed,
     PersistenceFailed,
+    Cooldown,           // resend requested within cooldown window
 }

@@ -1,4 +1,4 @@
-﻿namespace AuthApi.Services;
+namespace AuthApi.Services;
 
 public interface ISmsService
 {

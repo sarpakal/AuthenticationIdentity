@@ -1,7 +1,6 @@
 ﻿using AuthApi.Entities;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
-using System.Reflection.Emit;
 
 namespace AuthApi.Data;
 

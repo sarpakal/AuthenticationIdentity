@@ -1,4 +1,4 @@
-﻿namespace AuthApi.Entities;
+namespace AuthApi.Entities;
 
 public class UserAuditLog
 {
@@ -41,13 +41,20 @@ public class UserAuditLog
 /// <summary>Well-known event type constants to avoid magic strings.</summary>
 public static class AuditEventTypes
 {
-    public const string Enroll = "Enroll";
-    public const string OtpSent = "OtpSent";
-    public const string OtpVerified = "OtpVerified";
-    public const string OtpFailed = "OtpFailed";
-    public const string OtpExpired = "OtpExpired";
-    public const string Login = "Login";
-    public const string TokenRefresh = "TokenRefresh";
-    public const string Logout = "Logout";
+    public const string Enroll        = "Enroll";
+    public const string OtpSent       = "OtpSent";
+    public const string OtpVerified   = "OtpVerified";
+    public const string OtpFailed     = "OtpFailed";
+    public const string OtpExpired    = "OtpExpired";
+    public const string Login         = "Login";
+    public const string TokenRefresh  = "TokenRefresh";
+    public const string Logout        = "Logout";
     public const string AccountLocked = "AccountLocked";
+
+    /// <summary>All known event types — used by the retention job.</summary>
+    public static readonly IReadOnlyList<string> All =
+    [
+        Enroll, OtpSent, OtpVerified, OtpFailed, OtpExpired,
+        Login, TokenRefresh, Logout, AccountLocked,
+    ];
 }

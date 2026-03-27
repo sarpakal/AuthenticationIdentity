@@ -1,4 +1,4 @@
-﻿namespace AuthApi.Models;
+namespace AuthApi.Models;
 
 /// <summary>
 /// Device and session context extracted from inbound HTTP headers.

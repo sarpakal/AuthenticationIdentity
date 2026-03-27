@@ -1,4 +1,4 @@
-﻿using AuthApi.Models;
+using AuthApi.Models;
 
 namespace AuthApi.Services;
 
@@ -14,20 +14,20 @@ public static class DeviceInfoExtractor
 
         return new DeviceInfo
         {
-            IpAddress = GetClientIp(ctx),
-            UserAgent = headers.UserAgent.ToString(),
+            IpAddress      = GetClientIp(ctx),
+            UserAgent      = headers.UserAgent.ToString(),
 
             // Custom device headers — agree on these with your mobile/frontend teams
-            DeviceId = headers["X-Device-Id"].FirstOrDefault(),
-            DeviceType = headers["X-Device-Type"].FirstOrDefault(),   // Mobile|Desktop|Tablet
-            DeviceOs = headers["X-Device-Os"].FirstOrDefault(),     // iOS|Android|Windows
-            DeviceOsVersion = headers["X-Device-Os-Version"].FirstOrDefault(),
-            DeviceModel = headers["X-Device-Model"].FirstOrDefault(),
-            AppVersion = headers["X-App-Version"].FirstOrDefault(),
+            DeviceId       = headers["X-Device-Id"].FirstOrDefault(),
+            DeviceType     = headers["X-Device-Type"].FirstOrDefault(),   // Mobile|Desktop|Tablet
+            DeviceOs       = headers["X-Device-Os"].FirstOrDefault(),     // iOS|Android|Windows
+            DeviceOsVersion= headers["X-Device-Os-Version"].FirstOrDefault(),
+            DeviceModel    = headers["X-Device-Model"].FirstOrDefault(),
+            AppVersion     = headers["X-App-Version"].FirstOrDefault(),
             DeviceLanguage = headers["X-Device-Language"].FirstOrDefault(),
             DeviceTimezone = headers["X-Device-Timezone"].FirstOrDefault(),
-            Fingerprint = headers["X-Fingerprint"].FirstOrDefault(),
-            SessionId = headers["X-Session-Id"].FirstOrDefault(),
+            Fingerprint    = headers["X-Fingerprint"].FirstOrDefault(),
+            SessionId      = headers["X-Session-Id"].FirstOrDefault(),
         };
     }
 

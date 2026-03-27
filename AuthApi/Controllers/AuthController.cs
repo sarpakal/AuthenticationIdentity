@@ -1,3 +1,4 @@
+using System.IdentityModel.Tokens.Jwt;
 using AuthApi.Data;
 using AuthApi.DTOs;
 using AuthApi.Entities;
@@ -13,28 +14,31 @@ namespace AuthApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[EnableRateLimiting("auth")]
 public class AuthController : ControllerBase
 {
     private readonly UserManager<ApplicationUser> _userManager;
-    private readonly ITokenService  _tokens;
-    private readonly IAuditService  _audit;
-    private readonly AppDbContext   _db;
+    private readonly ITokenService           _tokens;
+    private readonly IAuditService           _audit;
+    private readonly ITokenBlacklistService  _blacklist;
+    private readonly AppDbContext            _db;
 
     public AuthController(
         UserManager<ApplicationUser> userManager,
         ITokenService tokens,
         IAuditService audit,
+        ITokenBlacklistService blacklist,
         AppDbContext db)
     {
         _userManager = userManager;
         _tokens      = tokens;
         _audit       = audit;
+        _blacklist   = blacklist;
         _db          = db;
     }
 
     // ── POST /api/auth/refresh ───────────────────────────────────────────────
     [HttpPost("refresh")]
+    [EnableRateLimiting("auth")]
     public async Task<IActionResult> Refresh([FromBody] RefreshRequest req)
     {
         var device = DeviceInfoExtractor.Extract(HttpContext);
@@ -70,12 +74,28 @@ public class AuthController : ControllerBase
     // ── POST /api/auth/logout ────────────────────────────────────────────────
     [HttpPost("logout")]
     [Authorize]
+    [EnableRateLimiting("auth")]
     public async Task<IActionResult> Logout([FromBody] LogoutRequest req)
     {
         var device = DeviceInfoExtractor.Extract(HttpContext);
-        var hashed = _tokens.HashToken(req.RefreshToken);
 
-        var user = await _userManager.Users
+        // ── Blacklist the current access token immediately ───────────────────
+        // Even though it expires in ≤15 min, this prevents reuse after logout.
+        var jti = User.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
+        if (jti != null)
+        {
+            // Parse expiry from the current token claims
+            var expClaim = User.FindFirst(JwtRegisteredClaimNames.Exp)?.Value;
+            var expiry   = expClaim != null
+                ? DateTimeOffset.FromUnixTimeSeconds(long.Parse(expClaim)).UtcDateTime
+                : DateTime.UtcNow.AddMinutes(15); // fallback
+
+            _blacklist.Blacklist(jti, expiry);
+        }
+
+        // ── Invalidate refresh token server-side ─────────────────────────────
+        var hashed = _tokens.HashToken(req.RefreshToken);
+        var user   = await _userManager.Users
             .FirstOrDefaultAsync(u => u.RefreshToken == hashed);
 
         if (user != null)

@@ -1,4 +1,4 @@
-﻿using AuthApi.Data;
+using AuthApi.Data;
 using AuthApi.Entities;
 using AuthApi.Models;
 
@@ -22,7 +22,7 @@ public class AuditService : IAuditService
 
     public AuditService(AppDbContext db, ILogger<AuditService> logger)
     {
-        _db = db;
+        _db     = db;
         _logger = logger;
     }
 
@@ -38,32 +38,32 @@ public class AuditService : IAuditService
         {
             var entry = new UserAuditLog
             {
-                UserId = userId,
-                EventType = eventType,
-                Success = success,
+                UserId        = userId,
+                EventType     = eventType,
+                Success       = success,
                 FailureReason = failureReason,
-                Timestamp = DateTime.UtcNow,
+                Timestamp     = DateTime.UtcNow,
 
                 // Network
-                IpAddress = device.IpAddress,
+                IpAddress     = device.IpAddress,
 
                 // HTTP
-                UserAgent = device.UserAgent,
-                HttpMethod = ctx.Request.Method,
-                RequestPath = ctx.Request.Path,
-                RequestId = ctx.TraceIdentifier,
+                UserAgent     = device.UserAgent,
+                HttpMethod    = ctx.Request.Method,
+                RequestPath   = ctx.Request.Path,
+                RequestId     = ctx.TraceIdentifier,
 
                 // Device
-                DeviceId = device.DeviceId,
-                DeviceType = device.DeviceType,
-                DeviceOs = device.DeviceOs,
-                DeviceOsVersion = device.DeviceOsVersion,
-                DeviceModel = device.DeviceModel,
-                AppVersion = device.AppVersion,
+                DeviceId       = device.DeviceId,
+                DeviceType     = device.DeviceType,
+                DeviceOs       = device.DeviceOs,
+                DeviceOsVersion= device.DeviceOsVersion,
+                DeviceModel    = device.DeviceModel,
+                AppVersion     = device.AppVersion,
                 DeviceLanguage = device.DeviceLanguage,
                 DeviceTimezone = device.DeviceTimezone,
-                Fingerprint = device.Fingerprint,
-                SessionId = device.SessionId,
+                Fingerprint    = device.Fingerprint,
+                SessionId      = device.SessionId,
             };
 
             _db.AuditLogs.Add(entry);
